@@ -149,9 +149,10 @@ running** — automation produces a reviewable PR or a republished image; you
 decide when to deploy (`docker compose pull && up -d`).
 
 - **[`update-teamspeak.yml`](.github/workflows/update-teamspeak.yml)** — weekly,
-  checks `teamspeak.com/versions/server.json`. On a new release it downloads and
-  SHA256-verifies the tarball, vendors it, bumps the `Dockerfile` pins, and opens
-  a **pull request**. Review it, merge, then tag a release to publish.
+  checks `teamspeak.com/versions/server.json`. On a new release it bumps the
+  `Dockerfile` version/checksum pins, builds the image in CI to prove the new
+  tarball downloads and matches its SHA256, and opens a **pull request**. Review
+  it, merge, then tag a release to publish.
 - **[`build.yml`](.github/workflows/build.yml)** — besides `v*` tags, also runs
   weekly to rebuild with a **fresh Debian base** (security updates), keeping the
   TeamSpeak and box64 versions pinned. It republishes `:latest` and a dated tag
