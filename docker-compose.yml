@@ -1,0 +1,28 @@
+services:
+  teamspeak:
+    image: ghcr.io/ithilias/ts3-server-arm64:latest
+    # To build locally instead of pulling from GHCR, comment out `image:` above
+    # and uncomment:
+    # build: .
+    container_name: teamspeak
+    restart: unless-stopped
+    init: true                # tini as PID 1: reaps zombies, clean signals
+    stop_grace_period: 30s    # give SQLite time to flush before SIGKILL
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      TZ: Europe/Berlin
+      # TS3_QUERY_ADMIN_PASSWORD: change-me
+    ports:
+      - "9987:9987/udp"       # voice
+      - "30033:30033/tcp"     # file transfer
+      # SSH ServerQuery, published on all interfaces. RESTRICT IT with a host
+      # firewall to the sources that need it, and never publish the plaintext
+      # raw query port (10011).
+      - "10022:10022/tcp"
+    volumes:
+      - ts3-data:/data
+
+volumes:
+  ts3-data:

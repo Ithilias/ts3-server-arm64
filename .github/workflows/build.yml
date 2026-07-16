@@ -1,0 +1,67 @@
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC: rebuild for a fresh Debian base
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # need tags for the scheduled-build checkout below
+
+      # The scheduled rebuild must ship the last RELEASED version with a fresh
+      # base — not whatever is on the default branch — so merging an update PR
+      # doesn't publish until it's tagged. Check out the latest v* tag.
+      - name: On schedule, build the latest released tag
+        if: github.event_name == 'schedule'
+        run: |
+          set -euo pipefail
+          tag="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "$tag" ]; then
+            echo "No v* tag yet; nothing to rebuild on schedule." >&2
+            exit 1
+          fi
+          echo "Checking out $tag"
+          git checkout -q "$tag"
+
+      # arm64 build on an amd64 runner via emulation. box64 is compiled here, so
+      # the build is slow (~20-30 min). Switch to a native arm64 runner later to
+      # speed up the box64 compile.
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=tag
+            type=schedule,pattern={{date 'YYYYMMDD'}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/arm64
+          pull: true # always re-resolve the base image so weekly rebuilds get security updates
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
