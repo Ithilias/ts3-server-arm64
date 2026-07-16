@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
         with:
@@ -34,9 +34,8 @@ jobs:
           echo "Checking out $tag"
           git checkout -q "$tag"
 
-      # arm64 build on an amd64 runner via emulation. box64 is compiled here, so
-      # the build is slow (~20-30 min). Switch to a native arm64 runner later to
-      # speed up the box64 compile.
+      # Native arm64 runner, so box64 compiles natively (fast). QEMU is still
+      # set up because the small x86_64-libstdc++ stage builds for linux/amd64.
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
