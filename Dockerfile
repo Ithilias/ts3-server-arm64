@@ -91,7 +91,11 @@ RUN groupadd -g 1000 ts \
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
+# LANG=C.UTF-8 gives the server a UTF-8 locale (glibc built-in, no locales
+# package needed); without it TS3 warns that the "C" locale may misbehave with
+# non-ASCII names.
 ENV TS3SERVER_LICENSE=accept \
+    LANG=C.UTF-8 \
     LD_LIBRARY_PATH=/opt/ts3 \
     BOX64_LD_LIBRARY_PATH=/opt/ts3 \
     BOX64_DYNAREC_STRONGMEM=1
