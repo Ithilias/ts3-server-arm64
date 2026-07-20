@@ -4,7 +4,7 @@ on:
   push:
     tags: ["v*"]
   schedule:
-    - cron: "0 6 * * 1" # Mondays 06:00 UTC: rebuild for a fresh Debian base
+    - cron: "17 6 * * 1" # Mondays 06:17 UTC: rebuild for a fresh Debian base (off the top of the hour to avoid GitHub's high-load drops)
   workflow_dispatch:
 
 permissions:
