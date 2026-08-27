@@ -14,7 +14,7 @@ ARG X86LIBS_PLATFORM=linux/amd64
 ########################################################################
 FROM arm64v8/debian:trixie-slim AS box64-builder
 
-ARG BOX64_VERSION=v0.4.2
+ARG BOX64_VERSION=v0.4.4
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
