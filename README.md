@@ -179,12 +179,18 @@ releases can regress emulation; don't blind-upgrade a working server.
 
 ## Notes on box64
 
-`BOX64_DYNAREC_STRONGMEM=1` is set in the image. TeamSpeak is multithreaded x86
-code that assumes strong (TSO) memory ordering; arm64 is weakly ordered, so this
-flag is required to avoid rare, hard-to-reproduce data/DB corruption in a
-long-running server. The image uses box64's generic arm64 dynarec for
-portability; for a known CPU you can build with a target flag (see the comment
-in the `Dockerfile`) for extra performance.
+`BOX64_DYNAREC_STRONGMEM=3` and `BOX64_DYNAREC_BIGBLOCK=0` are set in the image.
+TeamSpeak is multithreaded x86 code that assumes strong (TSO) memory ordering;
+arm64 is weakly ordered, so without enough emulated barriers threads race on
+glibc malloc and shared-memory metadata, corrupting the heap. That shows up as
+`free(): double free detected in tcache`, the `/dev/shm`-backed local accounting
+service failing with `Bad file descriptor`, and rare DB corruption in a
+long-running server. `STRONGMEM=3` adds barriers on writes and SIMD; `BIGBLOCK=0`
+is box64's recommended setting for heavily-threaded programs. If races still
+occur, raise `STRONGMEM` to `4` (mimics x86 TSO, like QEMU) at some speed cost.
+The image uses box64's generic arm64 dynarec for portability; for a known CPU you
+can build with a target flag (see the comment in the `Dockerfile`) for extra
+performance.
 
 ## License
 

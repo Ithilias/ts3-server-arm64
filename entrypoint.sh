@@ -30,7 +30,7 @@ FIRST_BOOT=0
 NEED_RECURSIVE=0
 [[ "$(stat -c '%u:%g' "$DATA_DIR")" == "$PUID:$PGID" ]] || NEED_RECURSIVE=1
 
-mkdir -p "$DATA_DIR/logs"
+mkdir -p "$DATA_DIR/logs" "$DATA_DIR/crashdumps"
 
 # Ensure 127.0.0.1 is exempt from query flood protection so our healthcheck
 # (and local tooling) never gets auto-banned. Operators add their own IPs here.
@@ -46,7 +46,7 @@ else
   # Top-level already correct (e.g. a pre-chowned bind mount), so the recursive
   # chown is skipped — but still own the paths we just created as root, or the
   # unprivileged server can't write its logs/allowlist.
-  chown ts:ts "$DATA_DIR/logs" "$ALLOWLIST"
+  chown ts:ts "$DATA_DIR/logs" "$DATA_DIR/crashdumps" "$ALLOWLIST"
 fi
 
 # --- Config ------------------------------------------------------------------
