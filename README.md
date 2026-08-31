@@ -179,18 +179,33 @@ releases can regress emulation; don't blind-upgrade a working server.
 
 ## Notes on box64
 
-`BOX64_DYNAREC_STRONGMEM=3` and `BOX64_DYNAREC_BIGBLOCK=0` are set in the image.
+`BOX64_DYNAREC_STRONGMEM=4` and `BOX64_DYNAREC_BIGBLOCK=0` are set in the image.
 TeamSpeak is multithreaded x86 code that assumes strong (TSO) memory ordering;
 arm64 is weakly ordered, so without enough emulated barriers threads race on
-glibc malloc and shared-memory metadata, corrupting the heap. That shows up as
-`free(): double free detected in tcache`, the `/dev/shm`-backed local accounting
-service failing with `Bad file descriptor`, and rare DB corruption in a
-long-running server. `STRONGMEM=3` adds barriers on writes and SIMD; `BIGBLOCK=0`
-is box64's recommended setting for heavily-threaded programs. If races still
-occur, raise `STRONGMEM` to `4` (mimics x86 TSO, like QEMU) at some speed cost.
-The image uses box64's generic arm64 dynarec for portability; for a known CPU you
-can build with a target flag (see the comment in the `Dockerfile`) for extra
-performance.
+glibc malloc metadata and can corrupt the heap, showing up as a hard crash like
+`free(): double free detected in tcache` (with a core dump) in a long-running
+server. `STRONGMEM=4` mimics x86 TSO (the same ordering QEMU emulates) and is the
+strongest setting; `BIGBLOCK=0` is box64's recommended setting for heavily-threaded
+programs. This costs some emulation speed, which a TS3 server (not CPU-bound) can
+absorb. The image uses box64's generic arm64 dynarec for portability; for a known
+CPU you can build with a target flag (see the comment in the `Dockerfile`) for
+extra performance.
+
+### The accounting "Bad file descriptor" log line
+
+You may see this in the server log, followed by a one-second restart:
+
+```
+ERROR |Accounting | |failed to register local accounting service: Bad file descriptor
+```
+
+This is a long-standing TeamSpeak quirk around its `/dev/shm`-backed local
+accounting service, seen on native x86 and under both QEMU and box64. It is
+**benign**: the server exits cleanly and `restart: unless-stopped` brings it back
+in about a second. It is *not* the heap corruption above (that produces a core
+dump; this does not). Under box64 it happens more often than under QEMU, and
+`STRONGMEM=4` reduces it; if it becomes disruptive, a QEMU-based image avoids it
+almost entirely at a higher CPU cost.
 
 ## License
 

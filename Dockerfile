@@ -95,17 +95,23 @@ RUN chmod +x /entrypoint.sh
 # package needed); without it TS3 warns that the "C" locale may misbehave with
 # non-ASCII names.
 #
-# STRONGMEM=3 + BIGBLOCK=0 harden box64's memory-model emulation: the x86 TS3
-# binary is heavily threaded, and on arm64's weaker ordering the default weak
-# barriers let threads race on glibc malloc/shm metadata, corrupting the heap
-# (seen as "double free detected in tcache" and the shm-backed accounting
-# service failing with EBADF). BIGBLOCK=0 is box64's recommended setting for
-# heavily-threaded programs. Bump to STRONGMEM=4 (x86 TSO) if races persist.
+# STRONGMEM=4 + BIGBLOCK=0 harden box64's memory-model emulation: the x86 TS3
+# binary is heavily threaded, and on arm64's weaker ordering box64's default weak
+# barriers let threads race on glibc malloc/shm metadata. STRONGMEM=4 mimics x86
+# TSO (like QEMU) and is the strongest setting; BIGBLOCK=0 is box64's recommended
+# setting for heavily-threaded programs.
+#
+# Why 4 and not 3: on this exact workload the previous QEMU-based image was
+# effectively crash-free over years, while box64 with STRONGMEM=3 still produced
+# a rare hard crash ("double free detected in tcache", a core dump) plus a benign
+# but frequent accounting hiccup (see the accounting note in the README). The x86
+# binary genuinely relies on TSO, so we match QEMU's ordering. Trade-off is some
+# emulation speed, which a TS3 server (not CPU-bound) can absorb.
 ENV TS3SERVER_LICENSE=accept \
     LANG=C.UTF-8 \
     LD_LIBRARY_PATH=/opt/ts3 \
     BOX64_LD_LIBRARY_PATH=/opt/ts3 \
-    BOX64_DYNAREC_STRONGMEM=3 \
+    BOX64_DYNAREC_STRONGMEM=4 \
     BOX64_DYNAREC_BIGBLOCK=0
 
 WORKDIR /data
