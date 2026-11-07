@@ -46,22 +46,24 @@ jobs:
           echo "Checking out $tag"
           git checkout -q "$tag"
 
-      # Native arm64 runner, so box64 compiles natively (fast). QEMU is still
-      # set up because the small x86_64-libstdc++ stage builds for linux/amd64.
+      # Native arm64 runner. The current Dockerfile runs no x86 code, but the
+      # scheduled rebuild checks out the latest release tag, and releases up to
+      # v1.0.3 still have an amd64 stage that needs QEMU. Drop this once a
+      # release with the QEMU-free Dockerfile exists.
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Build into the local Docker image store first and actually run it, so a
       # broken image (e.g. a new base or TS3 release box64 can't handle) never
-      # reaches :latest. The scheduled run skips the layer cache so the weekly
-      # rebuild really picks up fresh Debian packages.
+      # reaches :latest. Scheduled and manual rebuilds skip the layer cache so
+      # they really pick up fresh Debian packages.
       - name: Build image for smoke test
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/arm64
           pull: true # always re-resolve the base image
-          no-cache: ${{ github.event_name == 'schedule' }}
+          no-cache: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
           load: true
           tags: ${{ env.SMOKE_IMAGE }}
           cache-from: type=gha

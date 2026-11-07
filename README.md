@@ -7,7 +7,7 @@ executing the official 64-bit x86 binary under
 TeamSpeak has never shipped a native ARM build of the TS3 *server*, so running
 it on arm64 (Ampere/Graviton VPSes, Raspberry Pi, etc.) means emulating the x86
 binary — and box64 running the amd64 build is the fastest, best-supported way to
-do that. This image keeps that setup lean, reproducible, and safe by default.
+do that. This image keeps that setup lean, pinned, and safe by default.
 
 ## Highlights
 
@@ -15,10 +15,12 @@ do that. This image keeps that setup lean, reproducible, and safe by default.
   lives on the mounted `/data` volume, so it survives restarts and container
   recreates. Tools and web panels that pin the ServerQuery host key don't break
   on a regenerated key — a common, annoying failure mode of ephemeral setups.
-- **Pinned & verified builds.** box64 is built from a pinned source tag, and the
-  TeamSpeak server is downloaded at build time from a pinned version and checked
-  against a pinned SHA256 — the build fails on any mismatch. No proprietary
-  binaries are committed to this repo.
+- **Pinned & verified builds.** box64 is built from a pinned source tag whose
+  commit is checked, and the TeamSpeak server is downloaded at build time from a
+  pinned version and checked against a pinned SHA256 — the build fails on any
+  mismatch. No proprietary binaries are committed to this repo. The Debian base
+  and packages are deliberately *not* pinned, so rebuilds pick up security
+  fixes; builds are therefore not bit-for-bit reproducible.
 - **Lean & safe.** arm64-only, no init-system or multi-arch machinery. The
   server runs as a non-root user (the entrypoint starts as root only to remap
   PUID/PGID and fix `/data` ownership; start the container with `user:` to skip
@@ -39,6 +41,8 @@ services:
     restart: unless-stopped
     init: true                # clean signals + zombie reaping
     stop_grace_period: 30s    # let SQLite flush before SIGKILL
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "9987:9987/udp"       # voice
       - "30033:30033/tcp"     # file transfer
@@ -72,7 +76,8 @@ All state (database, logs, file transfers, the SSH host key) persists in the
 
 ## Configuration
 
-Config is generated into `/run/ts3server.ini` from environment variables on
+Config is generated into `/run/ts3server.ini` (`$TMPDIR` when started as
+non-root) from environment variables on
 every start. TeamSpeak keeps runtime state in the SQLite database (not the ini),
 so regenerating it is lossless. See [`.env.example`](.env.example):
 
@@ -82,15 +87,23 @@ so regenerating it is lossless. See [`.env.example`](.env.example):
 | `TS3_FILETRANSFER_PORT` | `30033` | File transfer TCP port |
 | `TS3_QUERY_SSH_PORT` | `10022` | SSH ServerQuery port |
 | `TS3_QUERY_PROTOCOLS` | `ssh` | ServerQuery protocols (keep `ssh` only) |
-| `TS3_HEALTHCHECK_PORT` | = SSH port | TCP port the healthcheck probes (`10011` if only `raw` is enabled); override for a custom ini |
+| `TS3_HEALTHCHECK_PORT` | = SSH port | TCP port the healthcheck probes (`10011` if `raw` is enabled without `ssh`); override for a custom ini |
 | `TS3_QUERY_ADMIN_PASSWORD` | — | Seed `serveradmin` password (first boot only; ignored once the DB exists) |
 | `TS3_QUERY_ADMIN_PASSWORD_FILE` | — | Same, read from a file (e.g. a Docker secret); takes precedence |
 | `TS3SERVER_INI` | — | Path to your own ini; bypasses generation |
 | `PUID` / `PGID` | `1000` | Run as a specific host uid/gid |
-| `TZ` | image default | Timezone for log timestamps |
+| `TZ` | `Europe/Berlin` in the repo's compose file, UTC otherwise | Timezone for log timestamps |
 
 Ports, ids and `TS3_QUERY_PROTOCOLS` are validated on start; a typo stops the
 container with a clear error instead of TS3 silently falling back to a default.
+
+Ports only take effect for a new server: TeamSpeak stores the voice port in its
+database when it creates the virtual server, so on an existing install change it
+in-app (or via ServerQuery) as well.
+
+The box64 tuning variables baked into the image (`BOX64_DYNAREC_STRONGMEM`,
+`BOX64_DYNAREC_BIGBLOCK`, see [Notes on box64](#notes-on-box64)) can be
+overridden under `environment:` like any other variable.
 
 Want full manual control? Mount your own ini into `/data` and set
 `TS3SERVER_INI=/data/ts3server.ini`.
@@ -138,17 +151,46 @@ stable, since it lives on the volume).
 - Add those source IPs to `/data/query_ip_allowlist.txt` to exempt them from
   query flood protection (the container seeds it with `127.0.0.1` so the
   healthcheck is never flood-banned).
+- The compose file sets `no-new-privileges`. You can go further with
+  `cap_drop: [ALL]` plus `cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]`
+  (what the entrypoint needs to fix ownership and drop to the server user).
+
+## Backup, upgrade and rollback
+
+Everything that matters is in `/data`: `ts3server.sqlitedb` (server, channels,
+permissions, identities), `files/` (file transfers), `ssh_host_rsa_key`,
+`licensekey.dat` (if any) and `query_ip_*.txt`. Stop the container before
+copying it so SQLite is consistent:
+
+```sh
+docker compose stop teamspeak
+sudo tar czf ts3-backup-$(date +%F).tgz -C /var/lib/docker/volumes/ts3-server-arm64_ts3-data/_data .
+docker compose start teamspeak
+```
+
+Upgrade with `docker compose pull && docker compose up -d`. To roll back, pin
+the previous image in the compose file (`:vX.Y.Z` or a dated `:YYYYMMDD` tag)
+and `up -d` again; restore the backup too if the newer TeamSpeak version already
+migrated the database.
 
 ## Building
 
 ```sh
-docker build -t ts3-server-arm64 .          # on arm64
-# or cross-build from another arch:
+docker build -t ts3-server-arm64 .          # on arm64 (no amd64 emulation needed)
+# or cross-build from another arch (needs arm64 emulation via binfmt/QEMU):
 docker buildx build --platform linux/arm64 -t ts3-server-arm64 .
 ```
 
 Images are published to GHCR by [`.github/workflows/build.yml`](.github/workflows/build.yml)
-on any `v*` tag, and also weekly (see below).
+on `v*` tags, and also weekly (see below). Every build — including pull
+requests, which are built but never pushed — starts the image and must reach
+`healthy` before anything is published.
+
+### Releasing
+
+Merge to `master`, then tag: `git tag v1.2.3 && git push origin v1.2.3`. A final
+`vX.Y.Z` tag publishes `:vX.Y.Z` and `:latest`; a pre-release tag such as
+`v1.2.3-rc1` publishes only its own tag.
 
 ## Automation
 
@@ -162,13 +204,24 @@ decide when to deploy (`docker compose pull && up -d`).
   tarball downloads and matches its SHA256, and opens a **pull request**. Review
   it, merge, then tag a release to publish.
 - **[`build.yml`](.github/workflows/build.yml)** — besides `v*` tags, also runs
-  weekly to rebuild with a **fresh Debian base** (security updates), keeping the
-  TeamSpeak and box64 versions pinned. It republishes `:latest` and a dated tag
-  in GHCR; your running container is untouched until you pull.
+  weekly to rebuild the **latest final release tag** without layer cache, on a
+  fresh Debian base with `apt-get upgrade` (security updates), keeping the
+  TeamSpeak and box64 versions pinned. It republishes `:latest` and a dated
+  `:YYYYMMDD` tag in GHCR; existing `:vX.Y.Z` tags are not rebuilt, so pin a
+  dated tag or `:latest` if you want those updates. A manual run does the same
+  rebuild (dated tag excluded). Your running container is untouched until you
+  pull.
 
 > One-time setup: for the PR workflow, enable *Settings → Actions → General →
 > Workflow permissions → "Allow GitHub Actions to create and approve pull
 > requests"*.
+
+The update PR's checksum comes from the same TeamSpeak feed as the version, so
+it guards against corrupt or swapped downloads, not against a compromised feed.
+If an update PR is closed without merging, that version isn't proposed again.
+
+GitHub disables scheduled workflows in public repos after 60 days without
+repository activity. If the weekly runs stop, re-enable them under *Actions*.
 
 ### Bumping the TeamSpeak version manually
 
@@ -182,8 +235,10 @@ The `update-teamspeak.yml` workflow does this for you, but to do it by hand:
 
 ### Bumping box64
 
-Change `BOX64_VERSION` in the `Dockerfile`. Pin it deliberately — box64 point
-releases can regress emulation; don't blind-upgrade a working server.
+Change `BOX64_VERSION` **and** `BOX64_COMMIT` in the `Dockerfile` (get the
+commit with `git ls-remote https://github.com/ptitSeb/box64 refs/tags/<tag>`).
+Pin it deliberately — box64 point releases can regress emulation; don't
+blind-upgrade a working server.
 
 ## Notes on box64
 
@@ -193,8 +248,9 @@ arm64 is weakly ordered, so without enough emulated barriers threads race on
 glibc malloc metadata and can corrupt the heap, showing up as a hard crash like
 `free(): double free detected in tcache` (with a core dump) in a long-running
 server. `STRONGMEM=4` mimics x86 TSO (the same ordering QEMU emulates) and is the
-strongest setting; `BIGBLOCK=0` is box64's recommended setting for heavily-threaded
-programs. This costs some emulation speed, which a TS3 server (not CPU-bound) can
+strongest setting (upstream labels it "for evaluation purposes", so re-check
+stability whenever box64 is bumped); `BIGBLOCK=0` is box64's recommended
+setting for heavily-threaded programs. This costs some emulation speed, which a TS3 server (not CPU-bound) can
 absorb. The image uses box64's generic arm64 dynarec for portability; for a known
 CPU you can build with a target flag (see the comment in the `Dockerfile`) for
 extra performance.
