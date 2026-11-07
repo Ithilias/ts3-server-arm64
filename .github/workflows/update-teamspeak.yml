@@ -1,10 +1,11 @@
 name: update-teamspeak
 
 # Weekly check for a newer TeamSpeak 3 server release. If one exists, the pinned
-# version + checksum in the Dockerfile are bumped and — only if the bumped image
-# actually builds (which downloads and SHA256-verifies the new tarball) — the
-# change is proposed as a pull request. Nothing is published automatically: a
-# human reviews and merges the PR, then tags a release (see build.yml).
+# version + checksum in the Dockerfile are bumped and, only if the bumped image
+# actually builds (which downloads and SHA256-verifies the new tarball) and
+# starts, the change is proposed as a pull request. Nothing is published
+# automatically: a human reviews and merges the PR, then tags a release (see
+# build.yml).
 
 on:
   schedule:
@@ -19,17 +20,31 @@ jobs:
   check:
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Everything read from server.json is untrusted until validated: it ends up
+      # in a sed expression, $GITHUB_OUTPUT, a branch name and the PR text, so a
+      # malformed or hostile value must fail here, not get interpreted later.
       - name: Resolve current vs. latest version
         id: ver
         run: |
           set -euo pipefail
-          current="$(grep -oP 'ARG TS_VERSION=\K.*' Dockerfile)"
+          current="$(grep -oP '^ARG TS_VERSION=\K.*' Dockerfile)"
           json="$(curl -fsSL https://teamspeak.com/versions/server.json)"
-          latest="$(echo "$json" | jq -r '.linux.x86_64.version')"
-          sha="$(echo "$json" | jq -r '.linux.x86_64.checksum')"
-          if [ "$current" = "$latest" ]; then utd=true; else utd=false; fi
+          latest="$(jq -er '.linux.x86_64.version' <<<"$json")"
+          sha="$(jq -er '.linux.x86_64.checksum' <<<"$json")"
+          version_re='^[0-9]+(\.[0-9]+){1,3}$'
+          if ! [[ "$latest" =~ $version_re ]]; then
+            echo "::error::Unexpected version format from server.json: $(printf '%q' "$latest")"
+            exit 1
+          fi
+          if ! [[ "$sha" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unexpected checksum format from server.json: $(printf '%q' "$sha")"
+            exit 1
+          fi
+          # Only ever move forward; a feed rollback must not open a downgrade PR.
+          newest="$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n1)"
+          if [ "$latest" = "$current" ] || [ "$newest" != "$latest" ]; then utd=true; else utd=false; fi
           {
             echo "current=$current"
             echo "latest=$latest"
@@ -38,35 +53,78 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "TeamSpeak: current=$current latest=$latest up_to_date=$utd"
 
-      - name: Bump the pinned version and checksum
+      # A PR for this exact version that was closed without merging means a human
+      # rejected (or deferred) it; don't reopen it every Monday.
+      - name: Skip versions whose PR was already closed
+        id: gate
         if: steps.ver.outputs.up_to_date == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW: ${{ steps.ver.outputs.latest }}
+        run: |
+          set -euo pipefail
+          closed="$(gh pr list --head "auto/teamspeak-${NEW}" --state closed --json number --jq 'length')"
+          if [ "$closed" != 0 ]; then
+            echo "A closed PR for auto/teamspeak-${NEW} exists; not reopening. Delete that branch's PR history or bump manually to retry."
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Bump the pinned version and checksum
+        if: steps.gate.outputs.proceed == 'true'
         env:
           LATEST: ${{ steps.ver.outputs.latest }}
           SHA: ${{ steps.ver.outputs.sha }}
         run: |
           set -euo pipefail
+          # Values are format-validated above (digits/dots, 64 hex chars), so
+          # they're safe inside these sed replacements.
           sed -i "s/^ARG TS_VERSION=.*/ARG TS_VERSION=${LATEST}/" Dockerfile
           sed -i "s/^ARG TS_SHA256=.*/ARG TS_SHA256=${SHA}/" Dockerfile
+          git diff --stat
 
-      # Build the bumped image before proposing it — this downloads the new
-      # tarball and verifies its SHA256 — so a broken update fails here instead
-      # of being discovered after a release tag exists. No push.
-      - uses: docker/setup-qemu-action@v4
-        if: steps.ver.outputs.up_to_date == 'false'
-      - uses: docker/setup-buildx-action@v4
-        if: steps.ver.outputs.up_to_date == 'false'
+      # Build the bumped image and run it before proposing it (the build
+      # downloads the new tarball and verifies its SHA256, the run proves box64
+      # still starts the new server), so a broken update fails here instead of
+      # being discovered after a release tag exists. No push.
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: steps.gate.outputs.proceed == 'true'
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        if: steps.gate.outputs.proceed == 'true'
       - name: Validate the bumped image builds
-        if: steps.ver.outputs.up_to_date == 'false'
-        uses: docker/build-push-action@v7
+        if: steps.gate.outputs.proceed == 'true'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/arm64
-          push: false
+          load: true
+          tags: ts3-server-arm64:smoke
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Smoke test (server starts and becomes healthy)
+        if: steps.gate.outputs.proceed == 'true'
+        run: |
+          set -euo pipefail
+          docker run -d --name ts3-smoke -e TS3_QUERY_ADMIN_PASSWORD=smoke-test ts3-server-arm64:smoke
+          for _ in $(seq 1 60); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' ts3-smoke 2>/dev/null || echo gone)"
+            running="$(docker inspect -f '{{.State.Running}}' ts3-smoke 2>/dev/null || echo false)"
+            echo "health=$status running=$running"
+            if [ "$status" = healthy ]; then break; fi
+            if [ "$running" != true ]; then break; fi
+            sleep 5
+          done
+          docker logs ts3-smoke 2>&1 | tail -n 50
+          if [ "$status" != healthy ]; then
+            echo "::error::Bumped image did not become healthy (health=$status running=$running)"
+            exit 1
+          fi
+          docker rm -f ts3-smoke >/dev/null
+
       - name: Open pull request
-        if: steps.ver.outputs.up_to_date == 'false'
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BASE: ${{ github.event.repository.default_branch }}
@@ -78,16 +136,22 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -b "$branch"
-          git add -A
+          git add Dockerfile
           git commit -m "chore: update TeamSpeak server ${CUR} -> ${NEW}"
           git push -u origin "$branch" --force
-          if gh pr create --base "$BASE" --head "$branch" \
+          open="$(gh pr list --head "$branch" --state open --json url --jq '.[0].url // empty')"
+          if [ -n "$open" ]; then
+            echo "An open PR for this branch already exists, branch was updated in place: $open"
+            exit 0
+          fi
+          body="Automated bump of the pinned TeamSpeak 3 server version and checksum (**${CUR} → ${NEW}**).
+
+          The SHA256 comes from TeamSpeak's own \`teamspeak.com/versions/server.json\`, the same source as the version. The build verifies the downloaded tarball against it, so it catches corrupt or swapped downloads, but it is not an independent attestation. The image was built and smoke-tested (healthy under box64) in CI before this PR was opened.
+
+          Review, merge, then push a \`vX.Y.Z\` tag to publish."
+          if ! gh pr create --base "$BASE" --head "$branch" \
                --title "Update TeamSpeak server ${CUR} -> ${NEW}" \
-               --body "Automated bump of the vendored TeamSpeak 3 server binary (**${CUR} → ${NEW}**). SHA256 verified against \`teamspeak.com/versions/server.json\`, and the image was built in CI before this PR was opened. Review, merge, then push a version tag to publish."; then
-            echo "Opened pull request."
-          elif gh pr view "$branch" --json url --jq '.url'; then
-            echo "A PR for this branch already exists; branch was updated in place."
-          else
-            echo "::error::Could not create or find a PR. Enable Settings -> Actions -> General -> 'Allow GitHub Actions to create and approve pull requests'."
+               --body "$body"; then
+            echo "::error::Could not create a PR. Enable Settings -> Actions -> General -> 'Allow GitHub Actions to create and approve pull requests'."
             exit 1
           fi
