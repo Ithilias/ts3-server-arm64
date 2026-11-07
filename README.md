@@ -1,39 +1,24 @@
 # ts3-server-arm64
 
-A small, hardened Docker image that runs the **TeamSpeak 3 server on arm64** by
-executing the official 64-bit x86 binary under
-[box64](https://github.com/ptitSeb/box64).
+A small, hardened Docker image that runs the **TeamSpeak 3 server on arm64**
+(Raspberry Pi, Ampere, Graviton) by executing the official x86-64 binary under
+[box64](https://github.com/ptitSeb/box64). TeamSpeak has never shipped an ARM
+build of the server, and box64 is the fastest way to run the x86 one.
 
-TeamSpeak has never shipped a native ARM build of the TS3 *server*, so running
-it on arm64 (Ampere/Graviton VPSes, Raspberry Pi, etc.) means emulating the x86
-binary — and box64 running the amd64 build is the fastest, best-supported way to
-do that. This image keeps that setup lean, pinned, and safe by default.
-
-## Highlights
-
-- **Stable SSH ServerQuery host key.** The server's `query_ssh_rsa_host_key`
-  lives on the mounted `/data` volume, so it survives restarts and container
-  recreates. Tools and web panels that pin the ServerQuery host key don't break
-  on a regenerated key — a common, annoying failure mode of ephemeral setups.
-- **Pinned & verified builds.** box64 is built from a pinned source tag whose
-  commit is checked, and the TeamSpeak server is downloaded at build time from a
-  pinned version and checked against a pinned SHA256 — the build fails on any
-  mismatch. No proprietary binaries are committed to this repo. The Debian base
-  and packages are deliberately *not* pinned, so rebuilds pick up security
-  fixes; builds are therefore not bit-for-bit reproducible.
-- **Lean & safe.** arm64-only, no init-system or multi-arch machinery. The
-  server runs as a non-root user (the entrypoint starts as root only to remap
-  PUID/PGID and fix `/data` ownership; start the container with `user:` to skip
-  that), ships a healthcheck, and generates its config from env vars.
-- **No surprise updates.** The TeamSpeak version is pinned; upgrades are a
-  deliberate, reviewable step (see [Automation](#automation)) — never an
-  unattended download on container start.
+- **Stable SSH ServerQuery host key.** It lives on the `/data` volume, so tools
+  that pin the host key keep working across restarts and recreates.
+- **Pinned and verified.** box64 is built from a pinned, commit-checked tag and
+  the TeamSpeak tarball is checked against a pinned SHA256. No proprietary
+  binaries live in this repo.
+- **Safe defaults.** The server runs as a non-root user, only SSH ServerQuery is
+  enabled, config comes from env vars, and a healthcheck is built in.
+- **No surprise updates.** Nothing is downloaded on container start; TeamSpeak
+  upgrades arrive as a reviewable PR and a new image tag.
 
 ## Quick start
 
-Drop this into a `docker-compose.yml` and run `docker compose up -d`:
-
 ```yaml
+# docker-compose.yml
 services:
   teamspeak:
     image: ghcr.io/ithilias/ts3-server-arm64:latest
@@ -43,13 +28,13 @@ services:
     stop_grace_period: 30s    # let SQLite flush before SIGKILL
     security_opt:
       - no-new-privileges:true
-    ports:
-      - "9987:9987/udp"       # voice
-      - "30033:30033/tcp"     # file transfer
-      - "10022:10022/tcp"     # SSH ServerQuery — firewall this to trusted sources
     environment:
       TZ: Europe/Berlin
       # TS3_QUERY_ADMIN_PASSWORD: change-me   # otherwise a token is printed on first boot
+    ports:
+      - "9987:9987/udp"       # voice
+      - "30033:30033/tcp"     # file transfer
+      - "10022:10022/tcp"     # SSH ServerQuery: firewall this to trusted sources
     volumes:
       - ts3-data:/data
 
@@ -59,226 +44,131 @@ volumes:
 
 ```sh
 docker compose up -d
-docker compose logs -f teamspeak   # first boot prints the ServerQuery admin token / privilege key
+docker compose logs -f teamspeak   # first boot prints the admin token and privilege key
 ```
 
-Then connect a TeamSpeak client to the host on `9987/udp` and claim admin with
-the privilege key from the logs.
-
-All state (database, logs, file transfers, the SSH host key) persists in the
-`ts3-data` volume mounted at `/data`, so restarts and recreates keep your server
-— including a **stable ServerQuery host key**.
-
-> **Cloning the repo instead?** It ships this same `docker-compose.yml` plus a
-> `.env.example`; copy it to `.env` to set variables there, or just run
-> `docker compose up -d`. To build the image locally rather than pull it, set
-> `build: .` in the compose file.
+Connect a TeamSpeak client on `9987/udp` and claim admin with the privilege key
+from the logs. If you clone the repo instead, its `docker-compose.yml` reads a
+`.env` file (see [`.env.example`](.env.example)) and can build locally with
+`build: .`.
 
 ## Configuration
 
-Config is generated into `/run/ts3server.ini` (`$TMPDIR` when started as
-non-root) from environment variables on
-every start. TeamSpeak keeps runtime state in the SQLite database (not the ini),
-so regenerating it is lossless. See [`.env.example`](.env.example):
+The server's ini is generated from these variables on every start. TeamSpeak
+keeps its state in the database, so regenerating it loses nothing.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `TS3_VOICE_PORT` | `9987` | Voice UDP port |
+| `TS3_VOICE_PORT` | `9987` | Voice UDP port (only for a new server, see below) |
 | `TS3_FILETRANSFER_PORT` | `30033` | File transfer TCP port |
 | `TS3_QUERY_SSH_PORT` | `10022` | SSH ServerQuery port |
-| `TS3_QUERY_PROTOCOLS` | `ssh` | ServerQuery protocols (keep `ssh` only) |
-| `TS3_HEALTHCHECK_PORT` | = SSH port | TCP port the healthcheck probes (`10011` if `raw` is enabled without `ssh`); override for a custom ini |
-| `TS3_QUERY_ADMIN_PASSWORD` | — | Seed `serveradmin` password (first boot only; ignored once the DB exists) |
-| `TS3_QUERY_ADMIN_PASSWORD_FILE` | — | Same, read from a file (e.g. a Docker secret); takes precedence |
-| `TS3SERVER_INI` | — | Path to your own ini; bypasses generation |
-| `PUID` / `PGID` | `1000` | Run as a specific host uid/gid |
-| `TZ` | `Europe/Berlin` in the repo's compose file, UTC otherwise | Timezone for log timestamps |
+| `TS3_QUERY_PROTOCOLS` | `ssh` | ServerQuery protocols; keep `ssh` only |
+| `TS3_HEALTHCHECK_PORT` | SSH port | Port the healthcheck probes; without `ssh`: raw `10011`, http `10080`, https `10443` |
+| `TS3_QUERY_ADMIN_PASSWORD` | unset | `serveradmin` password, applied on first boot only |
+| `TS3_QUERY_ADMIN_PASSWORD_FILE` | unset | Same, read from a file such as a Docker secret |
+| `TS3SERVER_INI` | unset | Use your own ini instead of the generated one |
+| `PUID` / `PGID` | `1000` | uid/gid the server runs as |
+| `TZ` | UTC | Timezone for log timestamps |
 
-Ports, ids and `TS3_QUERY_PROTOCOLS` are validated on start; a typo stops the
-container with a clear error instead of TS3 silently falling back to a default.
+- Invalid ports, ids or protocols stop the container with a clear error.
+- TeamSpeak stores the voice port in its database when it creates the virtual
+  server. On an existing install, changing `TS3_VOICE_PORT` alone has no effect;
+  change the port in TeamSpeak too.
+- The admin password reaches TeamSpeak through the generated ini (mode 0600),
+  not the command line. (With your own `TS3SERVER_INI` it goes on the command
+  line for the first boot.) Prefer the `_FILE` variant so it also stays out of
+  `docker inspect`:
 
-Ports only take effect for a new server: TeamSpeak stores the voice port in its
-database when it creates the virtual server, so on an existing install change it
-in-app (or via ServerQuery) as well.
+  ```yaml
+  services:
+    teamspeak:
+      environment:
+        TS3_QUERY_ADMIN_PASSWORD_FILE: /run/secrets/ts3_admin_password
+      secrets: [ts3_admin_password]
+  secrets:
+    ts3_admin_password:
+      file: ./ts3_admin_password.txt
+  ```
+- The box64 settings baked into the image (`BOX64_DYNAREC_STRONGMEM=4`,
+  `BOX64_DYNAREC_BIGBLOCK=0`) can be overridden like any other variable. They
+  exist for stability; the rationale is in the [`Dockerfile`](Dockerfile).
 
-The box64 tuning variables baked into the image (`BOX64_DYNAREC_STRONGMEM`,
-`BOX64_DYNAREC_BIGBLOCK`, see [Notes on box64](#notes-on-box64)) can be
-overridden under `environment:` like any other variable.
+## Your data
 
-Want full manual control? Mount your own ini into `/data` and set
-`TS3SERVER_INI=/data/ts3server.ini`.
-
-> **About the admin password:** it reaches TeamSpeak through the generated ini
-> (mode 0600), never the command line, and is removed from the server's
-> environment. A plain env var still shows in `docker inspect`;
-> `TS3_QUERY_ADMIN_PASSWORD_FILE` with a Docker secret avoids that. (With your
-> own `TS3SERVER_INI` it falls back to the command line for that first run.)
-
-## Importing an existing TeamSpeak server
-
-To move an existing TS3 server onto this image, seed the `/data` volume with the
-old server's files before first start (adjust the target to your volume mount):
-
-```sh
-NEW=/var/lib/docker/volumes/ts3-server-arm64_ts3-data/_data   # or your bind mount
-sudo cp    /path/to/old/ts3server.sqlitedb   "$NEW"/
-sudo cp -r /path/to/old/files                "$NEW"/ 2>/dev/null || true
-sudo cp    /path/to/old/licensekey.dat       "$NEW"/ 2>/dev/null || true
-
-# Optional but recommended: copy the old SSH host key so the ServerQuery
-# fingerprint stays the same and any host-key-pinning clients keep working.
-sudo cp    /path/to/old/ssh_host_rsa_key     "$NEW"/
-
-docker compose up -d   # the entrypoint hands root-owned files to PUID:PGID
-```
-
-Your virtual server, channels, permissions, and admin identity carry over. If
-you bring the old `ssh_host_rsa_key`, the SSH fingerprint is unchanged too;
-otherwise the server generates a fresh one on first boot (which then stays
-stable, since it lives on the volume).
-
-> Note: `ssh-keyscan` does **not** work reliably against TeamSpeak's SSH
-> ServerQuery — its older libssh stack closes the probe — so retrieve the key by
-> copying the file rather than scraping it. Clients connect fine as long as they
-> negotiate the `rsa-sha2-512` host-key algorithm TeamSpeak requires.
-
-## Hardening
-
-- Keep `TS3_QUERY_PROTOCOLS=ssh`; don't expose the plaintext raw query port
-  (`10011`) — especially not over the public internet.
-- Restrict the ServerQuery port (`10022`) with a host firewall to the sources
-  that actually need it.
-- Add those source IPs to `/data/query_ip_allowlist.txt` to exempt them from
-  query flood protection (the container seeds it with `127.0.0.1` so the
-  healthcheck is never flood-banned).
-- The compose file sets `no-new-privileges`. You can go further with
-  `cap_drop: [ALL]` plus `cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]`
-  (what the entrypoint needs to fix ownership and drop to the server user).
-
-## Backup, upgrade and rollback
-
-Everything that matters is in `/data`: `ts3server.sqlitedb` (server, channels,
+Everything lives in `/data`: `ts3server.sqlitedb` (server, channels,
 permissions, identities), `files/` (file transfers), `ssh_host_rsa_key`,
-`licensekey.dat` (if any) and `query_ip_*.txt`. Stop the container before
-copying it so SQLite is consistent:
+`licensekey.dat` (if any), the `query_ip_*.txt` lists, `logs/` and
+`crashdumps/`. When the container starts as root (the default), the entrypoint
+gives any file in `/data` that the server user doesn't own to `PUID:PGID`. On a
+bind mount that means changing `PUID`/`PGID` re-owns every file under it on the
+next start.
+
+**Backup.** Stop the container first so SQLite is consistent:
 
 ```sh
 docker compose stop teamspeak
-sudo tar czf ts3-backup-$(date +%F).tgz -C /var/lib/docker/volumes/ts3-server-arm64_ts3-data/_data .
+sudo tar czf ts3-backup-$(date +%F).tgz -C /var/lib/docker/volumes/<project>_ts3-data/_data .
 docker compose start teamspeak
 ```
 
-Upgrade with `docker compose pull && docker compose up -d`. To roll back, pin
-the previous image in the compose file (`:vX.Y.Z` or a dated `:YYYYMMDD` tag)
-and `up -d` again; restore the backup too if the newer TeamSpeak version already
-migrated the database.
+**Upgrade and rollback.** `docker compose pull && docker compose up -d`. To roll
+back, pin the previous `:vX.Y.Z` or dated `:YYYYMMDD` tag and run `up -d` again.
+Restore the backup too if the newer TeamSpeak already migrated the database.
 
-## Building
+**Importing an existing server.** Copy the old files into the volume before the
+first start:
 
 ```sh
-docker build -t ts3-server-arm64 .          # on arm64 (no amd64 emulation needed)
-# or cross-build from another arch (needs arm64 emulation via binfmt/QEMU):
-docker buildx build --platform linux/arm64 -t ts3-server-arm64 .
+NEW=/var/lib/docker/volumes/<project>_ts3-data/_data   # or your bind mount
+sudo cp    /path/to/old/ts3server.sqlitedb "$NEW"/
+sudo cp -r /path/to/old/files              "$NEW"/ 2>/dev/null || true
+sudo cp    /path/to/old/licensekey.dat     "$NEW"/ 2>/dev/null || true
+sudo cp    /path/to/old/ssh_host_rsa_key   "$NEW"/   # keeps the SSH fingerprint
+docker compose up -d
 ```
 
-Images are published to GHCR by [`.github/workflows/build.yml`](.github/workflows/build.yml)
-on `v*` tags, and also weekly (see below). Every build — including pull
-requests, which are built but never pushed — starts the image and must reach
-`healthy` before anything is published.
+Copy the host key file rather than scraping it with `ssh-keyscan`. TeamSpeak's
+older SSH stack closes the probe. Clients connect fine as long as they offer
+the `rsa-sha2-512` host key algorithm.
 
-### Releasing
+## Hardening
 
-Merge to `master`, then tag: `git tag v1.2.3 && git push origin v1.2.3`. A final
-`vX.Y.Z` tag publishes `:vX.Y.Z` and `:latest`; a pre-release tag such as
-`v1.2.3-rc1` publishes only its own tag.
+- Never enable or publish the plaintext raw query (`10011`) on a public network.
+- Firewall the SSH ServerQuery port to the sources that need it, and add those
+  IPs to `/data/query_ip_allowlist.txt` to exempt them from flood protection.
+  (`127.0.0.1` is seeded so the healthcheck is never banned.)
+- To go beyond `no-new-privileges`, add `cap_drop: [ALL]` with
+  `cap_add: [CHOWN, SETUID, SETGID, DAC_OVERRIDE]`. That is what the entrypoint
+  needs to fix ownership and drop privileges. Alternatively, start the container
+  with `user: "1000:1000"` and make sure `/data` is writable by that uid.
 
-## Automation
-
-Two scheduled workflows keep things current **without ever changing what's
-running** — automation produces a reviewable PR or a republished image; you
-decide when to deploy (`docker compose pull && up -d`).
-
-- **[`update-teamspeak.yml`](.github/workflows/update-teamspeak.yml)** — weekly,
-  checks `teamspeak.com/versions/server.json`. On a new release it bumps the
-  `Dockerfile` version/checksum pins, builds the image in CI to prove the new
-  tarball downloads and matches its SHA256, and opens a **pull request**. Review
-  it, merge, then tag a release to publish.
-- **[`build.yml`](.github/workflows/build.yml)** — besides `v*` tags, also runs
-  weekly to rebuild the **latest final release tag** without layer cache, on a
-  fresh Debian base with `apt-get upgrade` (security updates), keeping the
-  TeamSpeak and box64 versions pinned. It republishes `:latest` and a dated
-  `:YYYYMMDD` tag in GHCR; existing `:vX.Y.Z` tags are not rebuilt, so pin a
-  dated tag or `:latest` if you want those updates. A manual run does the same
-  rebuild (dated tag excluded). Your running container is untouched until you
-  pull.
-
-> One-time setup: for the PR workflow, enable *Settings → Actions → General →
-> Workflow permissions → "Allow GitHub Actions to create and approve pull
-> requests"*.
-
-The update PR's checksum comes from the same TeamSpeak feed as the version, so
-it guards against corrupt or swapped downloads, not against a compromised feed.
-If an update PR is closed without merging, that version isn't proposed again.
-
-GitHub disables scheduled workflows in public repos after 60 days without
-repository activity. If the weekly runs stop, re-enable them under *Actions*.
-
-### Bumping the TeamSpeak version manually
-
-The `update-teamspeak.yml` workflow does this for you, but to do it by hand:
-
-1. Look up the new version + SHA256 at `https://teamspeak.com/versions/server.json`
-   under `.linux.x86_64` (`.version` / `.checksum`).
-2. Update the `TS_VERSION` / `TS_SHA256` defaults in the `Dockerfile`.
-3. Rebuild. The server tarball is downloaded at build and the `sha256sum -c`
-   step fails the build on any mismatch.
-
-### Bumping box64
-
-Change `BOX64_VERSION` **and** `BOX64_COMMIT` in the `Dockerfile` (get the
-commit with `git ls-remote https://github.com/ptitSeb/box64 refs/tags/<tag>`).
-Pin it deliberately — box64 point releases can regress emulation; don't
-blind-upgrade a working server.
-
-## Notes on box64
-
-`BOX64_DYNAREC_STRONGMEM=4` and `BOX64_DYNAREC_BIGBLOCK=0` are set in the image.
-TeamSpeak is multithreaded x86 code that assumes strong (TSO) memory ordering;
-arm64 is weakly ordered, so without enough emulated barriers threads race on
-glibc malloc metadata and can corrupt the heap, showing up as a hard crash like
-`free(): double free detected in tcache` (with a core dump) in a long-running
-server. `STRONGMEM=4` mimics x86 TSO (the same ordering QEMU emulates) and is the
-strongest setting (upstream labels it "for evaluation purposes", so re-check
-stability whenever box64 is bumped); `BIGBLOCK=0` is box64's recommended
-setting for heavily-threaded programs. This costs some emulation speed, which a TS3 server (not CPU-bound) can
-absorb. The image uses box64's generic arm64 dynarec for portability; for a known
-CPU you can build with a target flag (see the comment in the `Dockerfile`) for
-extra performance.
-
-### The accounting "Bad file descriptor" log line
-
-You may see this in the server log, followed by a one-second restart:
+## Known quirk: accounting "Bad file descriptor" restarts
 
 ```
 ERROR |Accounting | |failed to register local accounting service: Bad file descriptor
 ```
 
-This is a long-standing TeamSpeak quirk around its `/dev/shm`-backed local
-accounting service, seen on native x86 and under both QEMU and box64. It is
-**benign**: the server exits cleanly and `restart: unless-stopped` brings it back
-in about a second. It is *not* the heap corruption above (that produces a core
-dump; this does not). Under box64 it happens more often than under QEMU, and
-`STRONGMEM=4` reduces it; if it becomes disruptive, a QEMU-based image avoids it
-almost entirely at a higher CPU cost.
+A long-standing TeamSpeak quirk around its `/dev/shm` accounting service, also
+seen on native x86 and under QEMU. It is benign: the server exits cleanly and
+`restart: unless-stopped` brings it back in about a second. Under box64 it
+happens more often than under QEMU; if it becomes disruptive, a QEMU-based
+image avoids it at a higher CPU cost. A real crash looks different: it leaves a
+core dump in `/data/crashdumps`.
+
+## Building and maintaining
+
+```sh
+docker build -t ts3-server-arm64 .   # on any arm64 host, no emulation needed
+```
+
+Releases, the weekly rebuild, automated TeamSpeak updates and version bumps are
+described in [MAINTAINING.md](MAINTAINING.md).
 
 ## License
 
-The files in this repository (Dockerfile, entrypoint, workflows, compose,
-docs) are licensed under the [MIT License](LICENSE).
-
-This project only *packages* TeamSpeak; it contains no TeamSpeak code. The
-TeamSpeak server itself is downloaded at build time and remains subject to the
-[TeamSpeak license](https://www.teamspeak.com/en/privacy-and-terms/) — by
-building or running the image you accept it (the container sets
-`TS3SERVER_LICENSE=accept`). MIT covers this repo's packaging only, not the
-bundled TeamSpeak binary.
+This repo's packaging (Dockerfile, entrypoint, workflows, compose, docs) is
+[MIT](LICENSE). It contains no TeamSpeak code; the server is downloaded at
+build time and remains under the
+[TeamSpeak license](https://www.teamspeak.com/en/privacy-and-terms/). Building
+or running the image means you accept it (the image sets
+`TS3SERVER_LICENSE=accept`).
