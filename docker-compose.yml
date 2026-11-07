@@ -11,16 +11,20 @@ services:
     env_file:
       - path: .env
         required: false
+    security_opt:
+      - no-new-privileges:true   # safe: gosu drops privileges without setuid
     environment:
-      TZ: Europe/Berlin
+      TZ: ${TZ:-Europe/Berlin}   # set TZ in .env to override
       # TS3_QUERY_ADMIN_PASSWORD: change-me
+    # Host and container ports follow the same .env variables the server uses,
+    # so changing a port in .env moves both sides together.
     ports:
-      - "9987:9987/udp"       # voice
-      - "30033:30033/tcp"     # file transfer
+      - "${TS3_VOICE_PORT:-9987}:${TS3_VOICE_PORT:-9987}/udp"                        # voice
+      - "${TS3_FILETRANSFER_PORT:-30033}:${TS3_FILETRANSFER_PORT:-30033}/tcp"        # file transfer
       # SSH ServerQuery, published on all interfaces. RESTRICT IT with a host
       # firewall to the sources that need it, and never publish the plaintext
       # raw query port (10011).
-      - "10022:10022/tcp"
+      - "${TS3_QUERY_SSH_PORT:-10022}:${TS3_QUERY_SSH_PORT:-10022}/tcp"
     volumes:
       - ts3-data:/data
 

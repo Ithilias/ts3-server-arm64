@@ -151,8 +151,8 @@ fi
 
 # --- Launch ------------------------------------------------------------------
 # CWD=/data so ts3server.sqlitedb and ssh_host_rsa_key land on the volume.
-# LD_LIBRARY_PATH / BOX64_DYNAREC_STRONGMEM / TS3SERVER_LICENSE come from the
-# image env and are inherited through gosu.
+# BOX64_* / TS3SERVER_LICENSE come from the image env and are inherited through
+# gosu. LD_LIBRARY_PATH is set here, for the server process only.
 LAUNCH_ARGS=("inifile=$INI_FILE")
 if [[ -n "$ADMIN_PASSWORD" ]]; then
   if [[ "$FIRST_BOOT" == 1 ]]; then
@@ -180,4 +180,4 @@ unset ADMIN_PASSWORD
 
 log "starting TeamSpeak 3 server (box64) ..."
 cd "$DATA_DIR"
-exec "${RUN_AS[@]}" box64 "$TS3_BIN" "${LAUNCH_ARGS[@]}"
+exec "${RUN_AS[@]}" env LD_LIBRARY_PATH=/opt/ts3 box64 "$TS3_BIN" "${LAUNCH_ARGS[@]}"
