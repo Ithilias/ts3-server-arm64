@@ -19,8 +19,10 @@ do that. This image keeps that setup lean, reproducible, and safe by default.
   TeamSpeak server is downloaded at build time from a pinned version and checked
   against a pinned SHA256 — the build fails on any mismatch. No proprietary
   binaries are committed to this repo.
-- **Lean & safe.** arm64-only, no init-system or multi-arch machinery. Runs as a
-  non-root user, ships a healthcheck, and generates its config from env vars.
+- **Lean & safe.** arm64-only, no init-system or multi-arch machinery. The
+  server runs as a non-root user (the entrypoint starts as root only to remap
+  PUID/PGID and fix `/data` ownership; start the container with `user:` to skip
+  that), ships a healthcheck, and generates its config from env vars.
 - **No surprise updates.** The TeamSpeak version is pinned; upgrades are a
   deliberate, reviewable step (see [Automation](#automation)) — never an
   unattended download on container start.
@@ -80,14 +82,24 @@ so regenerating it is lossless. See [`.env.example`](.env.example):
 | `TS3_FILETRANSFER_PORT` | `30033` | File transfer TCP port |
 | `TS3_QUERY_SSH_PORT` | `10022` | SSH ServerQuery port |
 | `TS3_QUERY_PROTOCOLS` | `ssh` | ServerQuery protocols (keep `ssh` only) |
-| `TS3_HEALTHCHECK_PORT` | = SSH port | TCP port the healthcheck probes; override for a custom protocol/ini |
+| `TS3_HEALTHCHECK_PORT` | = SSH port | TCP port the healthcheck probes (`10011` if only `raw` is enabled); override for a custom ini |
 | `TS3_QUERY_ADMIN_PASSWORD` | — | Seed `serveradmin` password (first boot only; ignored once the DB exists) |
+| `TS3_QUERY_ADMIN_PASSWORD_FILE` | — | Same, read from a file (e.g. a Docker secret); takes precedence |
 | `TS3SERVER_INI` | — | Path to your own ini; bypasses generation |
 | `PUID` / `PGID` | `1000` | Run as a specific host uid/gid |
 | `TZ` | image default | Timezone for log timestamps |
 
+Ports, ids and `TS3_QUERY_PROTOCOLS` are validated on start; a typo stops the
+container with a clear error instead of TS3 silently falling back to a default.
+
 Want full manual control? Mount your own ini into `/data` and set
 `TS3SERVER_INI=/data/ts3server.ini`.
+
+> **About the admin password:** it reaches TeamSpeak through the generated ini
+> (mode 0600), never the command line, and is removed from the server's
+> environment. A plain env var still shows in `docker inspect`;
+> `TS3_QUERY_ADMIN_PASSWORD_FILE` with a Docker secret avoids that. (With your
+> own `TS3SERVER_INI` it falls back to the command line for that first run.)
 
 ## Importing an existing TeamSpeak server
 
@@ -104,11 +116,7 @@ sudo cp    /path/to/old/licensekey.dat       "$NEW"/ 2>/dev/null || true
 # fingerprint stays the same and any host-key-pinning clients keep working.
 sudo cp    /path/to/old/ssh_host_rsa_key     "$NEW"/
 
-# The copies above are root-owned; hand them to the server's user (1000:1000),
-# or adjust to your PUID/PGID.
-sudo chown -R 1000:1000 "$NEW"
-
-docker compose up -d
+docker compose up -d   # the entrypoint hands root-owned files to PUID:PGID
 ```
 
 Your virtual server, channels, permissions, and admin identity carry over. If

@@ -85,7 +85,7 @@ COPY --from=x86libs /usr/lib/x86_64-linux-gnu/libstdc++.so.6* /opt/ts3/
 COPY --from=x86libs /lib/x86_64-linux-gnu/libgcc_s.so.1 /opt/ts3/
 
 RUN groupadd -g 1000 ts \
- && useradd -u 1000 -g 1000 -d /data -s /usr/sbin/nologin ts \
+ && useradd -u 1000 -g 1000 -m -d /home/ts -s /usr/sbin/nologin ts \
  && mkdir -p /data && chown ts:ts /data
 
 COPY entrypoint.sh /entrypoint.sh
