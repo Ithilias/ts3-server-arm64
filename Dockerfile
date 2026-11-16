@@ -60,8 +60,8 @@ FROM arm64v8/debian:trixie-slim AS tsfetch
 # Pin + verify the TeamSpeak release. Override at build time to bump versions;
 # version + checksum are published at teamspeak.com/versions/server.json
 # (.linux.x86_64). The sha256sum check fails the build on any mismatch.
-ARG TS_VERSION=3.13.8
-ARG TS_SHA256=a3c4658e09892d3dbd8ea752d0de42dc7d111bf44d09721927f0f4782496eb2d
+ARG TS_VERSION=3.13.9
+ARG TS_SHA256=35049b080d23b001d32079eff0be1404f2d9784fbc7457887422ec134c095d5a
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl bzip2 \
